@@ -1,4 +1,4 @@
-# SimpleFS — Phase 5
+# CoreFS
 
 A from-scratch file system implemented in C++20, backed by a single flat disk-image file.
 
