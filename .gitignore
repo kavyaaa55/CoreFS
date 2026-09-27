@@ -1,0 +1,17 @@
+# Build output
+build/
+
+# Disk images
+*.img
+
+# Compiled objects
+*.o
+*.a
+*.so
+*.exe
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
