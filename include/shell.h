@@ -23,10 +23,11 @@ private:
     // Builds printable path string from cwd_stack_
     std::string cwdPath() const;
 
-    // Tokenizes a line and dispatches to command handlers
+    // Tokenizes a line and dispatches to command handlers.
+    // Handles echo <text> > <file> and echo <text> >> <file> before general dispatch.
     void dispatch(const std::vector<std::string>& tokens);
 
-    // ── Implemented commands ───────────────────────────────────────────────
+    // ── Phase 5 original commands ──────────────────────────────────────────
     void cmd_pwd();
     void cmd_ls(const std::vector<std::string>& args);
     void cmd_cd(const std::vector<std::string>& args);
@@ -34,11 +35,16 @@ private:
     void cmd_touch(const std::vector<std::string>& args);
     void cmd_stat(const std::vector<std::string>& args);
 
-    // ── Phase 6 stubs ──────────────────────────────────────────────────────
+    // ── Now fully implemented ──────────────────────────────────────────────
     void cmd_cat(const std::vector<std::string>& args);
+    // write <path> <text...>  — truncate + write
     void cmd_write(const std::vector<std::string>& args);
+    // echo <text> > <path>   — truncate + write  (append=false)
+    // echo <text> >> <path>  — append             (append=true)
+    void cmd_echo(const std::vector<std::string>& args, bool append);
     void cmd_rm(const std::vector<std::string>& args);
     void cmd_rmdir(const std::vector<std::string>& args);
     void cmd_cp(const std::vector<std::string>& args);
     void cmd_mv(const std::vector<std::string>& args);
+    void cmd_df();
 };

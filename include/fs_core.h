@@ -4,7 +4,8 @@
 #include "disk.h"
 #include "types.h"
 
-// Wraps Disk with filesystem semantics: superblock, bitmaps, inode I/O.
+// Wraps Disk with filesystem semantics: superblock, bitmaps, inode I/O,
+// and the byte-offset read/write/truncate data path.
 class FSCore {
 public:
     explicit FSCore(const std::string& image_path); // loads and validates superblock (checks magic)
@@ -30,8 +31,32 @@ public:
     void writeBlock(uint32_t block_num, const void* buf);
 
     // ── Superblock ─────────────────────────────────────────────────────────
-    Superblock& superblock();   // in-memory copy; call flushSuperblock() after mutating
+    Superblock& superblock();      // in-memory copy; call flushSuperblock() after mutating
     void        flushSuperblock(); // writes in-memory superblock back to block 0
+
+    // ── Byte-offset data path ──────────────────────────────────────────────
+
+    // Read up to `len` bytes from file `ino` at byte offset `off` into `buf`.
+    // Clamps to file size; returns 0 at EOF. Throws on I/O error.
+    uint32_t readFile(uint32_t ino, uint32_t off, void* buf, uint32_t len);
+
+    // Write `len` bytes from `buf` into file `ino` at byte offset `off`.
+    // Allocates data blocks as needed, extends size, persists inode.
+    // Partial-block writes do read-modify-write.
+    // Throws if disk is full during allocation.
+    // Returns number of bytes written.
+    uint32_t writeFile(uint32_t ino, uint32_t off, const void* buf, uint32_t len);
+
+    // Resize file `ino` to `new_size` bytes.
+    // Shrink: frees blocks past the new size.
+    // Grow: extends size (sparse — unallocated blocks read as zeros).
+    void truncateFile(uint32_t ino, uint32_t new_size);
+
+    // If inode `ino` has link_count == 0, frees all data blocks and the inode.
+    void unlinkIfUnreferenced(uint32_t ino);
+
+    // Free all data blocks for `ino` and reset its block pointers / counts.
+    void freeAllBlocks(uint32_t ino);
 
 private:
     Disk       disk_;
@@ -40,4 +65,9 @@ private:
     // Internal bitmap helpers
     uint32_t allocBit(uint32_t bitmap_block, uint32_t max_bits);
     void     freeBit(uint32_t bitmap_block, uint32_t bit_index);
+
+    // Returns the absolute block number for logical block `lblock` in inode `ino`.
+    // If `allocate` is true, allocates missing blocks (direct only — Phase 5).
+    // Returns 0 if the logical block is a hole and allocate is false.
+    uint32_t bmap(Inode& inode, uint32_t lblock, bool allocate);
 };
