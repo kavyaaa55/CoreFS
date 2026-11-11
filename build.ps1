@@ -9,7 +9,7 @@ $SRC  = "$ROOT\src"
 $OUT  = "$ROOT\build"
 
 if (-not (Test-Path $GPP)) {
-    Write-Error "g++ not found at $GPP — install MSYS2 ucrt64 g++"
+    Write-Error "g++ not found at $GPP - install MSYS2 ucrt64 g++"
     exit 1
 }
 
