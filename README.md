@@ -1,73 +1,282 @@
 # CoreFS
 
-A from-scratch file system implemented in C++20, backed by a single flat disk-image file.
+A file system built from scratch in C++20 — its own on-disk format, its own allocator, its own directory structure, and a shell to interact with it. No delegation to the host OS's file system beyond raw byte access to a single disk-image file.
+
+## Status
+
+| Layer | Status |
+|---|---|
+| On-disk format (superblock, bitmaps, inode table) | ✅ Done |
+| Block / inode allocator | ✅ Done |
+| Directory structure (dirent lookup, add, remove) | ✅ Done |
+| `mkfs` tool | ✅ Done |
+| Shell: `pwd`, `ls`, `cd`, `mkdir`, `touch`, `stat` | ✅ Done |
+| Shell: `cat`, `write`, `echo`, `rm`, `rmdir`, `cp`, `mv`, `df` | ✅ Done |
+| Indirect blocks (single + double) for large files | ⏳ Phase 6 |
+| `.`/`..` on-disk, timestamps, mode, hard/symlinks | ⏳ Phase 7 |
+| Test suite (unit + model-based fuzz) + `fsck` | ⏳ Phase 8 |
+| Buffer cache (write-back LRU) | ⏳ Phase 9 |
+| Concurrency (per-inode locking, benchmarked) | ⏳ Phase 10 |
+| Journaling + crash-sweep tests | ⏳ Phase 11 |
+| FUSE mount | ⏳ Phase 12 |
+| Benchmarks + documentation | ⏳ Phase 13 |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────┐
+│   Shell (REPL)          │  ← all user commands
+├─────────────────────────┤
+│   Directory             │  ← path resolution, dirent lookup/add/remove
+├─────────────────────────┤
+│   FSCore                │  ← bitmap allocator, inode I/O, read/write/truncate
+├─────────────────────────┤
+│   Disk                  │  ← raw block read/write on the image file
+├─────────────────────────┤
+│   disk.img (flat file)  │  ← the "hardware"
+└─────────────────────────┘
+```
+
+**On-disk layout:**
+
+```
+Block 0              Superblock
+Block 1              Inode bitmap
+Block 2              Data bitmap
+Blocks 3..34         Inode table  (32 blocks for 1024 inodes at 128 bytes each)
+Blocks 35..end       Data blocks
+```
+
+Each inode has 12 direct block pointers (4 KB blocks → max file size 48 KB in Phase 5).
+Directories store arrays of `(inode_number, name)` dirents in their data blocks.
+`.` and `..` are **not** stored on disk — `cd` navigation is tracked in-memory as a path stack.
+
+---
+
+## Prerequisites
+
+| Tool | Minimum version | Notes |
+|---|---|---|
+| C++ compiler | C++20 | g++ 10+, clang++ 14+, MSVC 19.29+ |
+| CMake | 3.16 | Optional — a `build.ps1` script is provided for Windows |
+| MSYS2 (Windows) | any | Provides g++ via the `ucrt64` environment |
+
+---
 
 ## Build
 
+### Option A — CMake (Linux / macOS / Windows with CMake installed)
+
 ```bash
+cd simplefs
 mkdir build && cd build
 cmake ..
 cmake --build .
 ```
 
-On Windows with MSVC the binaries land in `build/Debug/` or `build/Release/`.
-On Linux/macOS they land directly in `build/`.
+Binaries land in `build/` on Linux/macOS, or `build/Debug/` on Windows with MSVC.
 
-## Usage
+### Option B — PowerShell script (Windows with MSYS2, no CMake needed)
 
-### 1. Create a disk image
+```powershell
+cd simplefs
+.\build.ps1
+```
+
+Binaries land in `simplefs\build\`.
+
+> **Requirement:** MSYS2 must be installed with the `ucrt64` g++ toolchain.
+> Install from https://www.msys2.org/, then run:
+> ```
+> pacman -S mingw-w64-ucrt-x86_64-gcc
+> ```
+
+### Option C — Manual g++ (any platform)
 
 ```bash
-./mkfs disk.img
-# defaults: 16384 blocks (64 MiB), 1024 inodes
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/mkfs_main.cpp src/disk.cpp \
+    -o build/mkfs
 
-# Custom size:
-./mkfs disk.img 8192 512   # 8192 blocks, 512 inodes
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/shell_main.cpp src/shell.cpp src/directory.cpp \
+    src/fs_core.cpp src/disk.cpp \
+    -o build/simplefs_shell
 ```
 
-Running `mkfs` twice on the same path produces a fresh, correctly-zeroed image.
+---
 
-### 2. Open the shell
+## Quick Start
+
+### Step 1 — Create a disk image
 
 ```bash
-./simplefs_shell disk.img
+# Linux / macOS
+./build/mkfs disk.img
+
+# Windows (PowerShell, from simplefs\)
+.\build\mkfs.exe disk.img
 ```
 
-### Available commands
-
-| Command       | Description                              |
-|---------------|------------------------------------------|
-| `pwd`         | Print current working directory          |
-| `ls [-l]`     | List directory contents                  |
-| `cd <path>`   | Change directory (supports `.`, `..`, absolute and relative paths) |
-| `mkdir <name>`| Create a new directory                   |
-| `touch <name>`| Create a new empty file                  |
-| `stat <name>` | Print inode metadata for a file/dir      |
-| `exit` / `quit` | Exit the shell                         |
-
-Phase 6 stubs (print "not implemented yet"):
-`cat`, `write`, `rm`, `rmdir`, `cp`, `mv`
-
-### Example session
+This creates a fresh 64 MiB image with 16384 blocks and 1024 inodes.
 
 ```
-$ ./mkfs disk.img
-$ ./simplefs_shell disk.img
-/ > pwd
-/
+mkfs: created 'disk.img' (16384 blocks, 1024 inodes, 64 MiB)
+```
+
+Custom size:
+```bash
+./build/mkfs disk.img 8192 512    # 8192 blocks (~32 MiB), 512 inodes
+```
+
+> Running `mkfs` on an existing image **wipes it completely** and starts fresh.
+
+### Step 2 — Open the shell
+
+```bash
+# Linux / macOS
+./build/simplefs_shell disk.img
+
+# Windows
+.\build\simplefs_shell.exe disk.img
+```
+
+You get an interactive prompt that shows your current path:
+
+```
+/ >
+```
+
+### Step 3 — Use it
+
+```
 / > mkdir docs
-/ > ls
-docs
-/ > ls -l
-d  0    docs
 / > cd docs
-/docs > touch notes
-/docs > stat notes
-inode: 1  type: file  size: 0  blocks: 0  links: 1
+/docs > touch notes.txt
+/docs > write notes.txt hello from CoreFS
+/docs > cat notes.txt
+hello from CoreFS
+/docs > ls -l
+f  18    notes.txt
 /docs > cd ..
-/ > cat notes
-cat: not implemented yet
+/ > df
+Filesystem blocks : 2 used / 16347 free / 16349 total
+Filesystem inodes : 2 used / 1022 free / 1024 total
+Block size        : 4096 bytes
+Image size        : 64 MiB
 / > exit
 ```
 
-Re-opening the shell against the same image preserves all created files and directories (persistence is guaranteed by flushing the superblock and bitmaps after every allocation).
+Reopen the shell on the same image — everything you created is still there.
+
+---
+
+## All Commands
+
+### Navigation
+
+| Command | Description |
+|---|---|
+| `pwd` | Print current working directory |
+| `ls` | List files and directories in current dir |
+| `ls -l` | Long listing — shows type (`d`/`f`), size in bytes, name |
+| `cd <path>` | Change directory. Supports relative (`docs`), absolute (`/docs/notes`), `.`, `..`, and multi-level paths (`cd ../other/dir`) |
+
+### File & Directory Management
+
+| Command | Description |
+|---|---|
+| `mkdir <name>` | Create a new directory |
+| `touch <name>` | Create a new empty file |
+| `rm <name>` | Delete a file (frees disk blocks when no links remain) |
+| `rmdir <name>` | Delete an empty directory |
+| `cp <src> <dst>` | Copy a file. If `dst` is an existing directory, copies into it |
+| `mv <src> <dst>` | Move or rename a file/directory. If `dst` is an existing directory, moves into it |
+
+### File Contents
+
+| Command | Description |
+|---|---|
+| `cat <name>` | Print file contents to screen |
+| `write <name> <text>` | Overwrite file with `text` (truncates first) |
+| `echo <text> > <name>` | Overwrite file with `text` (creates file if it doesn't exist) |
+| `echo <text> >> <name>` | Append `text` to file (creates file if it doesn't exist) |
+
+### Information
+
+| Command | Description |
+|---|---|
+| `stat <name>` | Show inode metadata: inode number, type, size, block count, link count |
+| `df` | Show free/used block and inode counts for the whole filesystem |
+
+### Shell Control
+
+| Command | Description |
+|---|---|
+| `exit` / `quit` | Exit the shell (all changes are already on disk — no save needed) |
+
+---
+
+## Example Session
+
+```
+$ ./build/mkfs disk.img
+mkfs: created 'disk.img' (16384 blocks, 1024 inodes, 64 MiB)
+
+$ ./build/simplefs_shell disk.img
+/ > pwd
+/
+/ > mkdir projects
+/ > cd projects
+/projects > mkdir os
+/projects > touch ideas.txt
+/projects > write ideas.txt build a real filesystem
+/projects > cat ideas.txt
+build a real filesystem
+/projects > echo second idea >> ideas.txt
+/projects > cat ideas.txt
+build a real filesystem
+second idea
+/projects > ls -l
+d  0    os
+f  38   ideas.txt
+/projects > cp ideas.txt backup.txt
+/projects > ls
+os
+ideas.txt
+backup.txt
+/projects > mv backup.txt os
+/projects > cd os
+/projects/os > ls
+backup.txt
+/projects/os > stat backup.txt
+inode: 4  type: file  size: 38  blocks: 1  links: 1
+/projects/os > rm backup.txt
+/projects/os > ls
+/projects/os > cd ../..
+/ > df
+Filesystem blocks : 3 used / 16346 free / 16349 total
+Filesystem inodes : 3 used / 1021 free / 1024 total
+Block size        : 4096 bytes
+Image size        : 64 MiB
+/ > exit
+
+$ ./build/simplefs_shell disk.img   # reopen — state persists
+/ > ls
+projects
+/ >
+```
+
+---
+
+## Notes & Limitations (Phase 5)
+
+- **Max filename length:** 27 characters
+- **Max file size:** 48 KB (12 direct blocks × 4 KB). Indirect block support comes in Phase 6.
+- **Max entries per directory:** 1536 (12 blocks × 128 dirents/block)
+- **`.` and `..`** are not stored on disk — `cd ..` works via an in-memory path stack
+- **Single-threaded** — no locking needed until Phase 10
+- **No crash consistency** — a crash mid-write can leave the image inconsistent. Journaling arrives in Phase 11.
+- **No permissions** — mode bits are stored but not enforced this phase
