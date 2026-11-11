@@ -67,7 +67,39 @@ Directories store arrays of `(inode_number, name)` dirents in their data blocks.
 
 ## Build
 
-### Option A — CMake (Linux / macOS / Windows with CMake installed)
+### Windows (MSYS2 UCRT64) — recommended
+
+Install MSYS2 from https://www.msys2.org/, then inside the MSYS2 UCRT64 terminal:
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-gcc   # one-time setup
+
+cd /d/coding/OS_CP/simplefs
+mkdir -p build
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/mkfs_main.cpp src/disk.cpp -o build/mkfs.exe
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/shell_main.cpp src/shell.cpp src/directory.cpp \
+    src/fs_core.cpp src/disk.cpp -o build/simplefs_shell.exe
+```
+
+### Linux / macOS
+
+```bash
+cd simplefs
+mkdir -p build
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/mkfs_main.cpp src/disk.cpp -o build/mkfs
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/shell_main.cpp src/shell.cpp src/directory.cpp \
+    src/fs_core.cpp src/disk.cpp -o build/simplefs_shell
+```
+
+### CMake (any platform)
 
 ```bash
 cd simplefs
@@ -76,75 +108,67 @@ cmake ..
 cmake --build .
 ```
 
-Binaries land in `build/` on Linux/macOS, or `build/Debug/` on Windows with MSVC.
-
-### Option B — PowerShell script (Windows with MSYS2, no CMake needed)
-
-```powershell
-cd simplefs
-.\build.ps1
-```
-
-Binaries land in `simplefs\build\`.
-
-> **Requirement:** MSYS2 must be installed with the `ucrt64` g++ toolchain.
-> Install from https://www.msys2.org/, then run:
-> ```
-> pacman -S mingw-w64-ucrt-x86_64-gcc
-> ```
-
-### Option C — Manual g++ (any platform)
-
-```bash
-g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
-    src/mkfs_main.cpp src/disk.cpp \
-    -o build/mkfs
-
-g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
-    src/shell_main.cpp src/shell.cpp src/directory.cpp \
-    src/fs_core.cpp src/disk.cpp \
-    -o build/simplefs_shell
-```
-
 ---
 
 ## Quick Start
 
-### Step 1 — Create a disk image
+### Windows (MSYS2 UCRT64) — recommended
+
+Open the **MSYS2 UCRT64** terminal (search for it in the Start menu), then:
 
 ```bash
-# Linux / macOS
-./build/mkfs disk.img
+# 1. Go to the project
+cd /d/coding/OS_CP/simplefs
 
-# Windows (PowerShell, from simplefs\)
-.\build\mkfs.exe disk.img
+# 2. Build
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/mkfs_main.cpp src/disk.cpp -o build/mkfs.exe
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/shell_main.cpp src/shell.cpp src/directory.cpp \
+    src/fs_core.cpp src/disk.cpp -o build/simplefs_shell.exe
+
+# 3. Create a disk image
+cd build
+./mkfs.exe disk.img
+
+# 4. Start the shell
+./simplefs_shell.exe disk.img
 ```
 
-This creates a fresh 64 MiB image with 16384 blocks and 1024 inodes.
+> Always run the binaries from the **same MSYS2 terminal** you compiled them in.
 
+### Linux / macOS
+
+```bash
+cd simplefs
+
+# Build
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/mkfs_main.cpp src/disk.cpp -o build/mkfs
+
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    src/shell_main.cpp src/shell.cpp src/directory.cpp \
+    src/fs_core.cpp src/disk.cpp -o build/simplefs_shell
+
+# Create image and start shell
+./build/mkfs disk.img
+./build/simplefs_shell disk.img
+```
+
+After running `mkfs` you'll see:
 ```
 mkfs: created 'disk.img' (16384 blocks, 1024 inodes, 64 MiB)
 ```
 
-Custom size:
+Custom image size:
 ```bash
-./build/mkfs disk.img 8192 512    # 8192 blocks (~32 MiB), 512 inodes
+./mkfs.exe disk.img 8192 512    # 8192 blocks (~32 MiB), 512 inodes
 ```
 
 > Running `mkfs` on an existing image **wipes it completely** and starts fresh.
 
-### Step 2 — Open the shell
-
-```bash
-# Linux / macOS
-./build/simplefs_shell disk.img
-
-# Windows
-.\build\simplefs_shell.exe disk.img
-```
-
 You get an interactive prompt that shows your current path:
-
 ```
 / >
 ```
