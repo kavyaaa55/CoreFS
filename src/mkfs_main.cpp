@@ -59,6 +59,7 @@ int main(int argc, char* argv[]) {
     // ── 3. Build and write the Superblock (block 0) ──────────────────────
     Superblock sb{};
     sb.magic               = MAGIC_NUMBER;
+    sb.version             = FS_VERSION;
     sb.block_size          = BLOCK_SIZE;
     sb.total_blocks        = total_blocks;
     sb.total_inodes        = total_inodes;

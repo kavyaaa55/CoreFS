@@ -66,8 +66,18 @@ private:
     uint32_t allocBit(uint32_t bitmap_block, uint32_t max_bits);
     void     freeBit(uint32_t bitmap_block, uint32_t bit_index);
 
-    // Returns the absolute block number for logical block `lblock` in inode `ino`.
-    // If `allocate` is true, allocates missing blocks (direct only — Phase 5).
-    // Returns 0 if the logical block is a hole and allocate is false.
+    // Returns the absolute block number for logical block `lblock` in inode.
+    // Walks direct -> single_indirect -> double_indirect.
+    // allocate=true: allocates missing indirect and data blocks on demand.
+    // allocate=false: returns 0 for holes (reads return zeros).
+    // Throws "file too big" if lblock >= DOUBLE_MAX.
+    // Throws "disk full" if allocation fails; on throw, already-allocated
+    // blocks in this call are freed before propagating (no leaks).
     uint32_t bmap(Inode& inode, uint32_t lblock, bool allocate);
+
+    // Helpers used by bmap/truncate for a single level of indirection.
+    // Returns the pointer stored at slot `slot` in block `blk` (0 if blk==0).
+    uint32_t readIndirectPtr(uint32_t blk, uint32_t slot);
+    // Writes `val` into slot `slot` of block `blk` (blk must be valid).
+    void     writeIndirectPtr(uint32_t blk, uint32_t slot, uint32_t val);
 };
