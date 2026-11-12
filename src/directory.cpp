@@ -1,111 +1,102 @@
 #include "directory.h"
 #include "constants.h"
-
 #include <cstring>
-#include <stdexcept>
-#include <sstream>
 
 static constexpr uint32_t DIRENTS_PER_BLOCK = BLOCK_SIZE / DIRENT_SIZE;
 
 // ── lookupDirent ───────────────────────────────────────────────────────────
-std::optional<uint32_t> lookupDirent(FSCore& fs, uint32_t dir_inode_num,
+std::optional<uint32_t> lookupDirent(FSCore& fs, uint32_t dir_ino,
                                      const std::string& name) {
-    Inode dir_inode;
-    fs.readInode(dir_inode_num, dir_inode);
-
-    uint8_t block_buf[BLOCK_SIZE];
-
-    for (uint32_t b = 0; b < dir_inode.block_count; ++b) {
-        uint32_t block_num = dir_inode.direct[b];
-        if (block_num == 0) continue;
-        fs.readBlock(block_num, block_buf);
-
-        const auto* dirents = reinterpret_cast<const Dirent*>(block_buf);
-        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num != 0 &&
-                std::strncmp(dirents[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0) {
-                return dirents[i].inode_num;
-            }
-        }
+    Inode dir; fs.readInode(dir_ino, dir);
+    uint8_t buf[BLOCK_SIZE];
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        const auto* d = reinterpret_cast<const Dirent*>(buf);
+        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i)
+            if (d[i].inode_num != 0 &&
+                std::strncmp(d[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0)
+                return d[i].inode_num;
     }
     return std::nullopt;
 }
 
 // ── addDirent ──────────────────────────────────────────────────────────────
-bool addDirent(FSCore& fs, uint32_t dir_inode_num,
+bool addDirent(FSCore& fs, uint32_t dir_ino,
                const std::string& name, uint32_t inode_num) {
-    Inode dir_inode;
-    fs.readInode(dir_inode_num, dir_inode);
+    Inode dir; fs.readInode(dir_ino, dir);
+    uint8_t buf[BLOCK_SIZE];
 
-    uint8_t block_buf[BLOCK_SIZE];
-
-    // 1. Look for a free slot in existing blocks; also check for duplicate names.
-    for (uint32_t b = 0; b < dir_inode.block_count; ++b) {
-        uint32_t block_num = dir_inode.direct[b];
-        if (block_num == 0) continue;
-        fs.readBlock(block_num, block_buf);
-
-        auto* dirents = reinterpret_cast<Dirent*>(block_buf);
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        auto* d = reinterpret_cast<Dirent*>(buf);
+        // Check collision first
+        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i)
+            if (d[i].inode_num != 0 &&
+                std::strncmp(d[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0)
+                return false;
+        // Find free slot
         for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num != 0 &&
-                std::strncmp(dirents[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0) {
-                return false; // name already exists
-            }
-        }
-        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num == 0) {
-                dirents[i].inode_num = inode_num;
-                std::memset(dirents[i].name, 0, MAX_FILENAME_LEN + 1);
-                std::strncpy(dirents[i].name, name.c_str(), MAX_FILENAME_LEN);
-                fs.writeBlock(block_num, block_buf);
+            if (d[i].inode_num == 0) {
+                d[i].inode_num = inode_num;
+                std::memset(d[i].name, 0, MAX_FILENAME_LEN + 1);
+                std::strncpy(d[i].name, name.c_str(), MAX_FILENAME_LEN);
+                fs.writeBlock(dir.direct[b], buf);
                 return true;
             }
         }
     }
 
-    // 2. No free slot — allocate a new block.
-    if (dir_inode.block_count >= NUM_DIRECT_BLOCKS) {
-        return false; // directory full
-    }
-
-    uint32_t new_block = fs.allocBlock();
-
-    std::memset(block_buf, 0, BLOCK_SIZE);
-    auto* dirents = reinterpret_cast<Dirent*>(block_buf);
-    dirents[0].inode_num = inode_num;
-    std::memset(dirents[0].name, 0, MAX_FILENAME_LEN + 1);
-    std::strncpy(dirents[0].name, name.c_str(), MAX_FILENAME_LEN);
-    fs.writeBlock(new_block, block_buf);
-
-    dir_inode.direct[dir_inode.block_count] = new_block;
-    ++dir_inode.block_count;
-    fs.writeInode(dir_inode_num, dir_inode);
-
+    // Allocate new data block
+    if (dir.block_count >= NUM_DIRECT_BLOCKS) return false;
+    uint32_t nb = fs.allocBlock();
+    std::memset(buf, 0, BLOCK_SIZE);
+    auto* d = reinterpret_cast<Dirent*>(buf);
+    d[0].inode_num = inode_num;
+    std::memset(d[0].name, 0, MAX_FILENAME_LEN + 1);
+    std::strncpy(d[0].name, name.c_str(), MAX_FILENAME_LEN);
+    fs.writeBlock(nb, buf);
+    dir.direct[dir.block_count++] = nb;
+    fs.writeInode(dir_ino, dir);
     return true;
 }
 
 // ── removeDirent ───────────────────────────────────────────────────────────
-// Finds the dirent named `name` and zeroes its inode_num (marks as free slot).
-// Returns false if not found.
-bool removeDirent(FSCore& fs, uint32_t dir_inode_num, const std::string& name) {
-    Inode dir_inode;
-    fs.readInode(dir_inode_num, dir_inode);
-
-    uint8_t block_buf[BLOCK_SIZE];
-
-    for (uint32_t b = 0; b < dir_inode.block_count; ++b) {
-        uint32_t block_num = dir_inode.direct[b];
-        if (block_num == 0) continue;
-        fs.readBlock(block_num, block_buf);
-
-        auto* dirents = reinterpret_cast<Dirent*>(block_buf);
+bool removeDirent(FSCore& fs, uint32_t dir_ino, const std::string& name) {
+    Inode dir; fs.readInode(dir_ino, dir);
+    uint8_t buf[BLOCK_SIZE];
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        auto* d = reinterpret_cast<Dirent*>(buf);
         for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num != 0 &&
-                std::strncmp(dirents[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0) {
-                // Zero out the slot
-                dirents[i].inode_num = 0;
-                std::memset(dirents[i].name, 0, MAX_FILENAME_LEN + 1);
-                fs.writeBlock(block_num, block_buf);
+            if (d[i].inode_num != 0 &&
+                std::strncmp(d[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0) {
+                d[i].inode_num = 0;
+                std::memset(d[i].name, 0, MAX_FILENAME_LEN + 1);
+                fs.writeBlock(dir.direct[b], buf);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ── replaceDirent ──────────────────────────────────────────────────────────
+bool replaceDirent(FSCore& fs, uint32_t dir_ino,
+                   const std::string& name, uint32_t new_inode_num) {
+    Inode dir; fs.readInode(dir_ino, dir);
+    uint8_t buf[BLOCK_SIZE];
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        auto* d = reinterpret_cast<Dirent*>(buf);
+        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
+            if (d[i].inode_num != 0 &&
+                std::strncmp(d[i].name, name.c_str(), MAX_FILENAME_LEN + 1) == 0) {
+                d[i].inode_num = new_inode_num;
+                fs.writeBlock(dir.direct[b], buf);
                 return true;
             }
         }
@@ -114,84 +105,48 @@ bool removeDirent(FSCore& fs, uint32_t dir_inode_num, const std::string& name) {
 }
 
 // ── isDirEmpty ─────────────────────────────────────────────────────────────
-bool isDirEmpty(FSCore& fs, uint32_t dir_inode_num) {
-    Inode dir_inode;
-    fs.readInode(dir_inode_num, dir_inode);
-
-    uint8_t block_buf[BLOCK_SIZE];
-
-    for (uint32_t b = 0; b < dir_inode.block_count; ++b) {
-        uint32_t block_num = dir_inode.direct[b];
-        if (block_num == 0) continue;
-        fs.readBlock(block_num, block_buf);
-
-        const auto* dirents = reinterpret_cast<const Dirent*>(block_buf);
+// Returns true if directory has no entries other than "." and "..".
+bool isDirEmpty(FSCore& fs, uint32_t dir_ino) {
+    Inode dir; fs.readInode(dir_ino, dir);
+    uint8_t buf[BLOCK_SIZE];
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        const auto* d = reinterpret_cast<const Dirent*>(buf);
         for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num != 0) return false;
+            if (d[i].inode_num == 0) continue;
+            if (std::strncmp(d[i].name, ".",  MAX_FILENAME_LEN + 1) == 0) continue;
+            if (std::strncmp(d[i].name, "..", MAX_FILENAME_LEN + 1) == 0) continue;
+            return false;
         }
     }
     return true;
 }
 
 // ── listDirents ────────────────────────────────────────────────────────────
-std::vector<Dirent> listDirents(FSCore& fs, uint32_t dir_inode_num) {
-    Inode dir_inode;
-    fs.readInode(dir_inode_num, dir_inode);
-
-    std::vector<Dirent> results;
-    uint8_t block_buf[BLOCK_SIZE];
-
-    for (uint32_t b = 0; b < dir_inode.block_count; ++b) {
-        uint32_t block_num = dir_inode.direct[b];
-        if (block_num == 0) continue;
-        fs.readBlock(block_num, block_buf);
-
-        const auto* dirents = reinterpret_cast<const Dirent*>(block_buf);
-        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i) {
-            if (dirents[i].inode_num != 0) {
-                results.push_back(dirents[i]);
-            }
-        }
+std::vector<Dirent> listDirents(FSCore& fs, uint32_t dir_ino) {
+    Inode dir; fs.readInode(dir_ino, dir);
+    std::vector<Dirent> out;
+    uint8_t buf[BLOCK_SIZE];
+    for (uint32_t b = 0; b < dir.block_count; ++b) {
+        if (dir.direct[b] == 0) continue;
+        fs.readBlock(dir.direct[b], buf);
+        const auto* d = reinterpret_cast<const Dirent*>(buf);
+        for (uint32_t i = 0; i < DIRENTS_PER_BLOCK; ++i)
+            if (d[i].inode_num != 0) out.push_back(d[i]);
     }
-    return results;
+    return out;
 }
 
-// ── resolvePath ────────────────────────────────────────────────────────────
-std::optional<uint32_t> resolvePath(FSCore& fs, uint32_t cwd_inode_num,
-                                    const std::string& path) {
-    if (path.empty()) return std::nullopt;
-
-    uint32_t current_inode;
-    std::string remaining;
-
-    if (path[0] == '/') {
-        current_inode = ROOT_INODE_NUM;
-        remaining = path.substr(1);
-    } else {
-        current_inode = cwd_inode_num;
-        remaining = path;
+// ── listDirentsUser ────────────────────────────────────────────────────────
+// Same as listDirents but skips "." and "..".
+std::vector<Dirent> listDirentsUser(FSCore& fs, uint32_t dir_ino) {
+    auto all = listDirents(fs, dir_ino);
+    std::vector<Dirent> out;
+    for (const auto& e : all) {
+        if (std::strncmp(e.name, ".",  MAX_FILENAME_LEN + 1) == 0) continue;
+        if (std::strncmp(e.name, "..", MAX_FILENAME_LEN + 1) == 0) continue;
+        out.push_back(e);
     }
-
-    std::istringstream ss(remaining);
-    std::string component;
-
-    while (std::getline(ss, component, '/')) {
-        if (component.empty() || component == ".") continue;
-
-        auto found = lookupDirent(fs, current_inode, component);
-        if (!found) return std::nullopt;
-
-        Inode inode;
-        fs.readInode(*found, inode);
-        if (inode.type != INODE_TYPE_DIR) {
-            // If there are more path components after this, it's an error
-            std::string rest;
-            if (std::getline(ss, rest)) {
-                return std::nullopt;
-            }
-        }
-        current_inode = *found;
-    }
-
-    return current_inode;
+    return out;
 }

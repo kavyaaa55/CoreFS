@@ -1,50 +1,37 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <utility>
 #include <cstdint>
 #include "fs_core.h"
 
 class Shell {
 public:
-    explicit Shell(const std::string& image_path); // constructs FSCore, sets cwd to root
-    void run(); // REPL loop: print prompt, read line, dispatch, repeat until "exit"/EOF
+    explicit Shell(const std::string& image_path);
+    void run();
 
 private:
-    FSCore fs_;
+    FSCore   fs_;
+    uint32_t cwd_;          // current directory inode (Phase 7: single inode, not a stack)
 
-    // Each entry: {inode_num, name_entered_by}.
-    // Empty stack = at root ("/").
-    std::vector<std::pair<uint32_t, std::string>> cwd_stack_;
-
-    // Returns current directory inode: root if stack empty, else cwd_stack_.back().first
-    uint32_t cwdInode() const;
-
-    // Builds printable path string from cwd_stack_
-    std::string cwdPath() const;
-
-    // Tokenizes a line and dispatches to command handlers.
-    // Handles echo <text> > <file> and echo <text> >> <file> before general dispatch.
+    std::string cwdPath();  // walks ".." up to root via on-disk dirents
     void dispatch(const std::vector<std::string>& tokens);
 
-    // ── Phase 5 original commands ──────────────────────────────────────────
     void cmd_pwd();
     void cmd_ls(const std::vector<std::string>& args);
     void cmd_cd(const std::vector<std::string>& args);
     void cmd_mkdir(const std::vector<std::string>& args);
     void cmd_touch(const std::vector<std::string>& args);
     void cmd_stat(const std::vector<std::string>& args);
-
-    // ── Now fully implemented ──────────────────────────────────────────────
     void cmd_cat(const std::vector<std::string>& args);
-    // write <path> <text...>  — truncate + write
     void cmd_write(const std::vector<std::string>& args);
-    // echo <text> > <path>   — truncate + write  (append=false)
-    // echo <text> >> <path>  — append             (append=true)
     void cmd_echo(const std::vector<std::string>& args, bool append);
     void cmd_rm(const std::vector<std::string>& args);
     void cmd_rmdir(const std::vector<std::string>& args);
     void cmd_cp(const std::vector<std::string>& args);
     void cmd_mv(const std::vector<std::string>& args);
     void cmd_df();
+    // Phase 7
+    void cmd_ln(const std::vector<std::string>& args);
+    void cmd_readlink(const std::vector<std::string>& args);
+    void cmd_chmod(const std::vector<std::string>& args);
 };

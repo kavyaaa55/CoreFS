@@ -6,35 +6,26 @@
 #include "fs_core.h"
 #include "types.h"
 
-// Returns the inode number for `name` inside directory dir_inode_num,
-// or std::nullopt if not found.
+// Low-level dirent helpers — do NOT touch link counts.
+
 std::optional<uint32_t> lookupDirent(FSCore& fs, uint32_t dir_inode_num,
                                      const std::string& name);
 
-// Adds a new dirent (name -> inode_num) into directory dir_inode_num.
-// Allocates a new data block for the directory if all currently-allocated
-// blocks are full. Returns false if:
-//   - the name already exists, or
-//   - the directory is at its direct-block capacity and cannot grow further.
 bool addDirent(FSCore& fs, uint32_t dir_inode_num,
                const std::string& name, uint32_t inode_num);
 
-// Removes the dirent named `name` from directory dir_inode_num.
-// Marks the slot as free (inode_num = 0). Returns false if not found.
 bool removeDirent(FSCore& fs, uint32_t dir_inode_num, const std::string& name);
 
-// Returns true if the directory has no entries (all slots inode_num == 0).
+// Replace the inode_num of an existing dirent `name` in-place.
+// Returns false if not found.
+bool replaceDirent(FSCore& fs, uint32_t dir_inode_num,
+                   const std::string& name, uint32_t new_inode_num);
+
+// Returns true if directory has no entries other than "." and "..".
 bool isDirEmpty(FSCore& fs, uint32_t dir_inode_num);
 
-// Returns every non-empty dirent (inode_num != 0) in the directory.
+// Returns all non-zero dirents (includes "." and "..").
 std::vector<Dirent> listDirents(FSCore& fs, uint32_t dir_inode_num);
 
-// Resolves a path (absolute "/a/b/c" or relative "a/b") starting from
-// cwd_inode_num for relative paths, or root for absolute paths.
-// ".." components are handled via the in-memory cwd_stack in the Shell;
-// this function treats ".." as an ordinary name and will likely return
-// nullopt for it (by design for Phase 5).
-// Returns the resolved inode number, or std::nullopt if any component
-// doesn't exist or a non-final component isn't a directory.
-std::optional<uint32_t> resolvePath(FSCore& fs, uint32_t cwd_inode_num,
-                                    const std::string& path);
+// Returns all non-zero dirents EXCLUDING "." and "..".
+std::vector<Dirent> listDirentsUser(FSCore& fs, uint32_t dir_inode_num);

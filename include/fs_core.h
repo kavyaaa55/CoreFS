@@ -1,83 +1,98 @@
 #pragma once
 #include <string>
+#include <string_view>
+#include <optional>
 #include <cstdint>
 #include "disk.h"
 #include "types.h"
 
-// Wraps Disk with filesystem semantics: superblock, bitmaps, inode I/O,
-// and the byte-offset read/write/truncate data path.
 class FSCore {
 public:
-    explicit FSCore(const std::string& image_path); // loads and validates superblock (checks magic)
+    explicit FSCore(const std::string& image_path);
 
     // ── Bitmap allocation ──────────────────────────────────────────────────
-    // Finds first free bit in data bitmap, marks used, decrements free_blocks,
-    // returns ABSOLUTE block number (already offset by data_block_start).
-    // Throws std::runtime_error if no blocks are free.
     uint32_t allocBlock();
-    void     freeBlock(uint32_t block_num); // clears bit, increments free_blocks
-
-    // Finds first free bit in inode bitmap, marks used, decrements free_inodes,
-    // returns inode number. Throws std::runtime_error if no inodes are free.
+    void     freeBlock(uint32_t block_num);
     uint32_t allocInode();
-    void     freeInode(uint32_t inode_num); // clears bit, increments free_inodes
+    void     freeInode(uint32_t inode_num);
 
     // ── Inode I/O ──────────────────────────────────────────────────────────
     void readInode(uint32_t inode_num, Inode& out);
     void writeInode(uint32_t inode_num, const Inode& in);
 
-    // ── Raw block access (forwarded to Disk) ──────────────────────────────
+    // ── Raw block access ───────────────────────────────────────────────────
     void readBlock(uint32_t block_num, void* buf);
     void writeBlock(uint32_t block_num, const void* buf);
 
     // ── Superblock ─────────────────────────────────────────────────────────
-    Superblock& superblock();      // in-memory copy; call flushSuperblock() after mutating
-    void        flushSuperblock(); // writes in-memory superblock back to block 0
+    Superblock& superblock();
+    void        flushSuperblock();
 
     // ── Byte-offset data path ──────────────────────────────────────────────
-
-    // Read up to `len` bytes from file `ino` at byte offset `off` into `buf`.
-    // Clamps to file size; returns 0 at EOF. Throws on I/O error.
     uint32_t readFile(uint32_t ino, uint32_t off, void* buf, uint32_t len);
-
-    // Write `len` bytes from `buf` into file `ino` at byte offset `off`.
-    // Allocates data blocks as needed, extends size, persists inode.
-    // Partial-block writes do read-modify-write.
-    // Throws if disk is full during allocation.
-    // Returns number of bytes written.
     uint32_t writeFile(uint32_t ino, uint32_t off, const void* buf, uint32_t len);
+    void     truncateFile(uint32_t ino, uint32_t new_size);
+    void     freeAllBlocks(uint32_t ino);
+    void     unlinkIfUnreferenced(uint32_t ino);
 
-    // Resize file `ino` to `new_size` bytes.
-    // Shrink: frees blocks past the new size.
-    // Grow: extends size (sparse — unallocated blocks read as zeros).
-    void truncateFile(uint32_t ino, uint32_t new_size);
+    // ── Phase 7: high-level FS operations ─────────────────────────────────
 
-    // If inode `ino` has link_count == 0, frees all data blocks and the inode.
-    void unlinkIfUnreferenced(uint32_t ino);
+    // Create a regular file in directory `dir`, link count = 1.
+    // Returns new inode number. Throws on error.
+    uint32_t createFile(uint32_t dir, std::string_view name, uint16_t mode);
 
-    // Free all data blocks for `ino` and reset its block pointers / counts.
-    void freeAllBlocks(uint32_t ino);
+    // Create a directory in `parent`. Writes "." and "..", updates parent link count.
+    uint32_t makeDir(uint32_t parent, std::string_view name, uint16_t mode);
+
+    // Remove a non-directory entry from `dir`. Decrements link count, frees if 0.
+    void unlinkFile(uint32_t dir, std::string_view name);
+
+    // Remove an empty directory from `parent`.
+    void removeDir(uint32_t parent, std::string_view name);
+
+    // Rename/move src entry to dst (cross-dir safe, handles link counts for dirs).
+    void renameEntry(uint32_t src_dir, std::string_view src_name,
+                     uint32_t dst_dir, std::string_view dst_name);
+
+    // Hard link: add name in dir pointing to same inode as src_ino.
+    void hardLink(uint32_t src_ino, uint32_t dir, std::string_view name);
+
+    // Symlink: create inode of type SYMLINK, store target as file data.
+    uint32_t makeSymlink(std::string_view target, uint32_t dir, std::string_view name);
+
+    // Read symlink target into string.
+    std::string readSymlink(uint32_t ino);
+
+    // Path resolution: handles absolute/relative, ".", "..", symlinks (depth limit 8).
+    // follow_last=false => do NOT follow a symlink at the final component (for lstat/readlink).
+    // Returns the resolved inode, or throws on error.
+    uint32_t resolve(std::string_view path, uint32_t cwd, bool follow_last = true,
+                     int depth = 0);
+
+    // Walk ".." from ino up to root; build "/a/b/c" path string.
+    std::string inodePath(uint32_t ino);
+
+    // Returns true if `ancestor` is an ancestor of (or equal to) `ino`.
+    bool isAncestor(uint32_t ancestor, uint32_t ino);
+
+    // ── Phase 7: timestamp helpers ─────────────────────────────────────────
+    static uint32_t now();                      // current unix time
+    static void touchMC(Inode& i);              // set mtime + ctime = now()
+    static void touchC(Inode& i);               // set ctime = now()
+    // Update atime relatime-style (only if atime <= mtime)
+    void updateAtime(uint32_t ino);
 
 private:
     Disk       disk_;
     Superblock sb_;
 
-    // Internal bitmap helpers
     uint32_t allocBit(uint32_t bitmap_block, uint32_t max_bits);
     void     freeBit(uint32_t bitmap_block, uint32_t bit_index);
 
-    // Returns the absolute block number for logical block `lblock` in inode.
-    // Walks direct -> single_indirect -> double_indirect.
-    // allocate=true: allocates missing indirect and data blocks on demand.
-    // allocate=false: returns 0 for holes (reads return zeros).
-    // Throws "file too big" if lblock >= DOUBLE_MAX.
-    // Throws "disk full" if allocation fails; on throw, already-allocated
-    // blocks in this call are freed before propagating (no leaks).
     uint32_t bmap(Inode& inode, uint32_t lblock, bool allocate);
-
-    // Helpers used by bmap/truncate for a single level of indirection.
-    // Returns the pointer stored at slot `slot` in block `blk` (0 if blk==0).
     uint32_t readIndirectPtr(uint32_t blk, uint32_t slot);
-    // Writes `val` into slot `slot` of block `blk` (blk must be valid).
     void     writeIndirectPtr(uint32_t blk, uint32_t slot, uint32_t val);
+
+    // Drop one link; free inode+blocks if links reach 0, else update ctime.
+    void dropLink(uint32_t ino);
 };
