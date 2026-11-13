@@ -53,7 +53,7 @@ TEST_CASE("hard link: write via a, read via b, rm a, b survives") {
 }
 
 TEST_CASE("rm: free count returns to baseline") {
-    TempFS t("rm");
+    TempFS t("rm", 512, 128); // 100 files need more than the default 64 inodes
     uint32_t free0 = t->superblock().free_blocks;
     uint32_t ino_free0 = t->superblock().free_inodes;
 

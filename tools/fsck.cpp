@@ -95,13 +95,29 @@ static void for_each_block(Disk& disk, const Inode& in,
 // Walk all dirents of a directory inode.
 static void for_each_dirent(Disk& disk, const Inode& in,
                             const std::function<void(const Dirent&)>& cb) {
+    // Directories use direct + single + double indirect blocks like files;
+    // block_count is the logical extent.
+    auto ptr_at = [&](uint32_t blk, uint32_t slot) -> uint32_t {
+        uint8_t pb[BLOCK_SIZE]; disk.readBlock(blk, pb);
+        uint32_t v; std::memcpy(&v, pb + slot * 4, 4); return v;
+    };
+    auto map_lblock = [&](uint32_t lb) -> uint32_t {
+        if (lb < DIRECT_MAX) return in.direct[lb];
+        if (lb < SINGLE_MAX) return in.indirect ? ptr_at(in.indirect, lb - DIRECT_MAX) : 0;
+        uint32_t rel = lb - SINGLE_MAX;
+        if (!in.double_indirect) return 0;
+        uint32_t l1 = ptr_at(in.double_indirect, rel / PTRS_PER_BLOCK);
+        return l1 ? ptr_at(l1, rel % PTRS_PER_BLOCK) : 0;
+    };
     uint8_t buf[BLOCK_SIZE];
-    for (uint32_t b = 0; b < in.block_count && b < NUM_DIRECT_BLOCKS; ++b) {
-        if (!in.direct[b]) continue;
-        disk.readBlock(in.direct[b], buf);
+    uint32_t n = in.block_count < DOUBLE_MAX ? in.block_count : DOUBLE_MAX;
+    for (uint32_t b = 0; b < n; ++b) {
+        uint32_t phys = map_lblock(b);
+        if (!phys) continue;
+        disk.readBlock(phys, buf);
         const auto* d = reinterpret_cast<const Dirent*>(buf);
         for (uint32_t i = 0; i < BLOCK_SIZE / DIRENT_SIZE; ++i)
-            if (d[i].inode_num != 0) cb(d[i]);
+            if (d[i].name[0] != '\0') cb(d[i]);
     }
 }
 
@@ -135,7 +151,10 @@ static int do_fsck(const std::string& img_path, bool repair) {
 
     // Load bitmaps
     Bitmap ibm = load_bitmap(disk, sb.inode_bitmap_block, sb.total_inodes);
-    Bitmap dbm = load_bitmap(disk, sb.data_bitmap_block,  sb.total_blocks);
+    // The data bitmap is indexed relative to data_block_start (bit 0 = first
+    // data block), matching FSCore::allocBlock / freeBlock.
+    Bitmap dbm = load_bitmap(disk, sb.data_bitmap_block,  sb.total_blocks - sb.data_block_start);
+    auto dbit = [&](uint32_t b) { return b - sb.data_block_start; };
 
     // Per-inode reference count (how many dirents point to it)
     std::vector<uint32_t> seen(sb.total_inodes, 0);
@@ -170,7 +189,7 @@ static int do_fsck(const std::string& img_path, bool repair) {
             bref[b]++;
             if (bref[b] > 1)
                 R.err("DOUBLE_REF", "inode " + std::to_string(ino) + " blk " + std::to_string(b));
-            if (!dbm.get(b))
+            if (!dbm.get(dbit(b)))
                 R.err("REF_BUT_FREE", "inode " + std::to_string(ino) + " blk " + std::to_string(b));
         });
 
@@ -234,7 +253,7 @@ static int do_fsck(const std::string& img_path, bool repair) {
 
     // Block leak check
     for (uint32_t b = sb.data_block_start; b < sb.total_blocks; ++b)
-        if (dbm.get(b) && bref[b] == 0)
+        if (dbm.get(dbit(b)) && bref[b] == 0)
             R.err("BLOCK_LEAK", "blk " + std::to_string(b));
 
     // ── Summary ───────────────────────────────────────────────────────────
@@ -248,13 +267,18 @@ static int do_fsck(const std::string& img_path, bool repair) {
         fprintf(stderr, "REPAIR: fixing bitmap leaks and link counts\n");
         // Rebuild data bitmap from bref
         uint8_t new_dbm[BLOCK_SIZE] = {};
-        for (uint32_t b = 0; b < sb.total_blocks; ++b)
-            if (bref[b] > 0 || b < sb.data_block_start)
-                new_dbm[b / 8] |= static_cast<uint8_t>(1u << (b % 8));
-        // Also mark all metadata blocks
-        for (uint32_t b = 0; b < sb.data_block_start; ++b)
-            new_dbm[b / 8] |= static_cast<uint8_t>(1u << (b % 8));
+        // (metadata blocks are not in the data bitmap; bit 0 = data_block_start)
+        uint32_t used = 0;
+        for (uint32_t b = sb.data_block_start; b < sb.total_blocks; ++b)
+            if (bref[b] > 0) {
+                uint32_t bit = dbit(b);
+                new_dbm[bit / 8] |= static_cast<uint8_t>(1u << (bit % 8));
+                ++used;
+            }
         disk.writeBlock(sb.data_bitmap_block, new_dbm);
+        // Keep the superblock's free count in step with the rebuilt bitmap
+        sb.free_blocks = (sb.total_blocks - sb.data_block_start) - used;
+        disk.writeBlock(0, &sb);
 
         // Fix link counts for reachable inodes
         for (uint32_t i = 0; i < sb.total_inodes; ++i) {
@@ -282,6 +306,8 @@ extern "C" int fsck_image(const char* path) {
     return do_fsck(path, false);
 }
 
+// Tests compile this file with SFS_FSCK_NO_MAIN to call fsck_image() directly.
+#ifndef SFS_FSCK_NO_MAIN
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         fprintf(stderr, "usage: simplefs_fsck <image> [--repair]\n");
@@ -290,3 +316,4 @@ int main(int argc, char* argv[]) {
     bool repair = (argc >= 3 && std::string(argv[2]) == "--repair");
     return do_fsck(argv[1], repair);
 }
+#endif

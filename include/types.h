@@ -57,7 +57,8 @@ struct Inode {
 static_assert(sizeof(Inode) == INODE_SIZE, "Inode must be exactly INODE_SIZE bytes");
 
 // ── Dirent ──────────────────────────────────────────────────────────────────
-// Fixed 32-byte record. inode_num == 0 means unused slot.
+// Fixed 32-byte record. An empty name (name[0] == 0) marks an unused slot;
+// inode_num 0 is a real inode (root), so it cannot be the marker.
 struct Dirent {
     uint32_t inode_num;
     char     name[MAX_FILENAME_LEN + 1]; // null-terminated, 28 bytes

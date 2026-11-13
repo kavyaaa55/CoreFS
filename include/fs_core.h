@@ -32,7 +32,18 @@ public:
     uint32_t readFile(uint32_t ino, uint32_t off, void* buf, uint32_t len);
     uint32_t writeFile(uint32_t ino, uint32_t off, const void* buf, uint32_t len);
     void     truncateFile(uint32_t ino, uint32_t new_size);
+    // Frees every data + pointer block of the inode, whatever its size field says
+    // (directories may have size 0 on images made before directory sizes existed).
     void     freeAllBlocks(uint32_t ino);
+
+    // Map logical block `lblock` of an in-memory inode to a physical block
+    // (direct, single- or double-indirect). With allocate=true a zeroed block is
+    // allocated if missing; the caller must then writeInode() the inode.
+    // Returns 0 for a hole when allocate=false. Used by the directory layer so
+    // directories can grow past the 12 direct blocks.
+    uint32_t mapBlock(Inode& inode, uint32_t lblock, bool allocate) {
+        return bmap(inode, lblock, allocate);
+    }
     void     unlinkIfUnreferenced(uint32_t ino);
 
     // ── Phase 7: high-level FS operations ─────────────────────────────────
@@ -69,6 +80,15 @@ public:
     uint32_t resolve(std::string_view path, uint32_t cwd, bool follow_last = true,
                      int depth = 0);
 
+    // Permission enforcement (owner rwx bits; there is a single user).
+    // Off by default so library users and tests are unaffected; the shell turns
+    // it on. When on, resolve() requires 'x' on every directory it searches.
+    void setEnforcePermissions(bool on) { enforce_perms_ = on; }
+    bool enforcePermissions() const     { return enforce_perms_; }
+    // Throws "Permission denied" if enforcement is on and `ino` lacks `bit`
+    // (one of 0400 read, 0200 write, 0100 execute/search).
+    void checkPerm(uint32_t ino, uint16_t bit);
+
     // Walk ".." from ino up to root; build "/a/b/c" path string.
     std::string inodePath(uint32_t ino);
 
@@ -85,6 +105,10 @@ public:
 private:
     Disk       disk_;
     Superblock sb_;
+    bool       enforce_perms_ = false;
+
+    // Free all blocks at logical index >= first_free (no size checks).
+    void releaseBlocksFrom(Inode& inode, uint32_t first_free);
 
     uint32_t allocBit(uint32_t bitmap_block, uint32_t max_bits);
     void     freeBit(uint32_t bitmap_block, uint32_t bit_index);

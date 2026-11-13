@@ -87,6 +87,10 @@ cmake --build .
 
 Binaries land in `build/`.
 
+> **CMake 4.x:** the fetched doctest declares an old `cmake_minimum_required`, which CMake 4 rejects.
+> Configure with `cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5` (in PowerShell, quote it:
+> `"-DCMAKE_POLICY_VERSION_MINIMUM=3.5"`).
+
 ### Manual g++ (no CMake needed)
 
 ```bash
@@ -134,55 +138,70 @@ You'll get an interactive prompt:
 
 ## All Commands
 
+Every `<path>` may be absolute (`/a/b`), relative (`a/b`, `../x`) or a bare name.
+Text with spaces can be quoted: `"..."` (with `\"` and `\\` escapes) or `'...'`; `\x` escapes one
+character. A quoted `">"` is text, not a redirect. `help` prints a summary.
+
 ### Navigation
 
 | Command | Description |
 |---|---|
 | `pwd` | Print current directory path |
-| `ls` | List contents of current directory |
-| `ls -l` | Long listing — type char, mode `rwxrwxrwx`, links, size, name (symlinks show `-> target`) |
-| `cd <path>` | Change directory. Supports `.`, `..`, absolute `/a/b`, relative `a/b`, multi-level |
+| `ls [path...]` | List a directory (default: current); a file path lists just that file |
+| `ls -l [path...]` | Long listing — type (`-` file, `d` dir, `l` symlink), mode `rwxrwxrwx`, links, size, name (symlinks show `-> target`) |
+| `cd [path]` | Change directory (no path = `/`). Supports `.`, `..`, absolute, relative, multi-level |
 
 ### File & Directory Management
 
 | Command | Description |
 |---|---|
-| `mkdir <name>` | Create a new directory |
-| `touch <name>` | Create a new empty file |
-| `rm <name>` | Delete a file (frees blocks when link count reaches 0) |
-| `rmdir <name>` | Delete an empty directory |
-| `cp <src> <dst>` | Copy a file. If `dst` is an existing directory, copies into it |
-| `mv <src> <dst>` | Move or rename. If `dst` is an existing directory, moves into it |
+| `mkdir [-p] <path...>` | Create directories; `-p` also creates missing parents and accepts existing ones |
+| `touch <path...>` | Create empty files, or update the timestamps of existing ones |
+| `rm <path...>` | Delete files or symlinks (frees blocks when link count reaches 0) |
+| `rmdir <path...>` | Delete empty directories (not the current one) |
+| `cp <src> <dst>` | Copy a file. If `dst` is an existing directory, copies into it. Copying a file onto itself is refused |
+| `mv <src> <dst>` | Move or rename. If `dst` is an existing directory, moves into it. The prompt follows a moved current directory |
 
 ### File Contents
 
 | Command | Description |
 |---|---|
-| `cat <name>` | Print file contents |
-| `write <name> <text...>` | Overwrite file with text |
-| `echo <text> > <name>` | Overwrite file (creates if missing) |
-| `echo <text> >> <name>` | Append to file (creates if missing) |
+| `cat <path...>` | Print file contents |
+| `write <path> <text...>` | Overwrite an existing file with text |
+| `echo <text> > <path>` | Overwrite file (creates if missing; writes through symlinks) |
+| `echo <text> >> <path>` | Append to file (creates if missing) |
 
-### Links & Permissions (Phase 7)
+### Links & Permissions
 
 | Command | Description |
 |---|---|
-| `ln <src> <dst>` | Hard link — both names point to the same inode |
-| `ln -s <target> <name>` | Symlink — `name` stores `target` as file data |
-| `readlink <name>` | Print the target of a symlink |
-| `chmod <octal> <name>` | Set permission bits (stored, not enforced this phase) |
+| `ln <src> <dst>` | Hard link — both names point to the same inode. `dst` may be a directory |
+| `ln -s <target> <link>` | Symlink — `link` stores `target` as given; a relative target resolves from the link's directory |
+| `readlink <path>` | Print the target of a symlink |
+| `chmod <octal> <path>` | Set permission bits (follows symlinks) |
+
+**Permissions are enforced** using the owner bits (there is a single user):
+
+| Bit | On a file | On a directory |
+|---|---|---|
+| `r` (4) | `cat`, `cp` from it | `ls` it |
+| `w` (2) | `write`, `echo >`/`>>`, `cp` onto it | create, delete, rename entries in it (`touch`, `mkdir`, `rm`, `rmdir`, `mv`, `cp`, `ln`) |
+| `x` (1) | — | enter it (`cd`) or reach anything through it |
+
+`chmod` and `stat` are always allowed. Symlink modes are not checked.
 
 ### Information
 
 | Command | Description |
 |---|---|
-| `stat <name>` | Show inode: number, type, size, blocks, links, mode (octal), atime, mtime, ctime |
+| `stat <path>` | Show inode: number, type, size, blocks, links, mode (octal), atime, mtime, ctime |
 | `df` | Show free/used block and inode counts |
 
 ### Shell Control
 
 | Command | Description |
 |---|---|
+| `help` | List commands |
 | `exit` / `quit` | Exit the shell (all changes are already on disk) |
 
 ---
@@ -195,8 +214,9 @@ cd build
 # Unit + integration tests (via doctest)
 ./sfs_tests
 
-# Model-based fuzzer: 100 seeds × 400 ops each
+# Model-based fuzzer: 100 seeds × 400 ops each; fsck runs on each image after its seed
 ./sfs_fuzz 100 400
+SFS_FUZZ_TRACE=1 ./sfs_fuzz 1 400   # print every op with model/fs outcome
 
 # fsck on a disk image
 ./simplefs_fsck disk.img
@@ -239,7 +259,7 @@ this is CoreFS
 this is CoreFS
 second line
 /projects > ls -l
-f  rwxrwxrwx  1  29    readme.txt
+-rw-r--r--  1  29    readme.txt
 /projects > ln readme.txt backup.txt
 /projects > stat readme.txt
 inode: 3  type: file  size: 29  blocks: 1  links: 2  mode: 644  ...
@@ -269,9 +289,9 @@ Image size        : 64 MiB
 
 - **Max filename:** 27 characters
 - **Max file size:** ~4 GB (12 direct + single-indirect + double-indirect blocks at 4 KB each)
-- **Max entries per directory:** 1536 (12 blocks × 128 dirents/block)
+- **Max entries per directory:** ~134 million — directories use the same direct + single- + double-indirect block map as files (128 dirents per 4 KB block). A directory's size is its allocated bytes (4096 per block)
 - **Symlink target length:** max 1023 characters
 - **Single-threaded** — no locking until Phase 10
 - **No crash consistency** — a crash mid-write can corrupt the image. Journaling arrives in Phase 11
-- **Permissions not enforced** — `chmod` stores mode bits but they are not checked
+- **Permissions: single user** — owner bits are enforced; group/other bits are stored but unused (no users or groups)
 - **`..` of `/` is `/`** — following `..` from root stays at root

@@ -102,6 +102,7 @@ int main(int argc, char* argv[]) {
         root.mode        = 0755;
         root.link_count  = 3;    // 2 base + 1 for lost+found's ".."
         root.block_count = 1;
+        root.size        = BLOCK_SIZE; // dirs report their allocated bytes
         root.direct[0]   = root_data_blk;
         root.atime = root.mtime = root.ctime = t;
         std::memcpy(buf + byte_w % BLOCK_SIZE, &root, sizeof(Inode));
@@ -117,6 +118,7 @@ int main(int argc, char* argv[]) {
         lf.mode        = 0700;
         lf.link_count  = 2;
         lf.block_count = 1;
+        lf.size        = BLOCK_SIZE;
         lf.direct[0]   = lf_data_blk;
         lf.atime = lf.mtime = lf.ctime = t;
         std::memcpy(buf + byte_w % BLOCK_SIZE, &lf, sizeof(Inode));

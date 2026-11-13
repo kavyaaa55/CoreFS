@@ -265,6 +265,16 @@ void FSCore::truncateFile(uint32_t ino, uint32_t new_size) {
             disk_.writeBlock(phys, bb);
         }
     }
+    releaseBlocksFrom(inode, first_free);
+    inode.size = new_size;
+    touchMC(inode);
+    writeInode(ino, inode);
+}
+
+// ── releaseBlocksFrom ──────────────────────────────────────────────────────
+// Frees data blocks at logical index >= first_free plus any pointer blocks
+// left empty. Updates block_count (logical extent, as bmap maintains it).
+void FSCore::releaseBlocksFrom(Inode& inode, uint32_t first_free) {
     for (uint32_t lb = first_free; lb < DIRECT_MAX; ++lb)
         if (inode.direct[lb]) { freeBlock(inode.direct[lb]); inode.direct[lb] = 0; }
     if (inode.indirect) {
@@ -305,13 +315,29 @@ void FSCore::truncateFile(uint32_t ino, uint32_t new_size) {
         if (!any_l1) { freeBlock(inode.double_indirect); inode.double_indirect = 0; }
         else { std::memcpy(rdbl, dbl, BLOCK_SIZE); disk_.writeBlock(inode.double_indirect, rdbl); }
     }
-    inode.block_count = first_free < DIRECT_MAX ? first_free : DIRECT_MAX;
-    inode.size        = new_size;
+    // block_count is the logical extent (highest mapped block + 1), the same
+    // meaning bmap() gives it; it used to be capped at DIRECT_MAX here.
+    if (inode.block_count > first_free) inode.block_count = first_free;
+}
+
+// truncateFile(ino, 0) returns early when size is already 0, which is the case
+// for directories (and dirs on older images), so freeing goes direct to
+// releaseBlocksFrom(). Without this, every rmdir leaked the dir's data block.
+void FSCore::freeAllBlocks(uint32_t ino) {
+    Inode inode; readInode(ino, inode);
+    releaseBlocksFrom(inode, 0);
+    inode.size = 0;
     touchMC(inode);
     writeInode(ino, inode);
 }
 
-void FSCore::freeAllBlocks(uint32_t ino) { truncateFile(ino, 0); }
+// ── checkPerm ──────────────────────────────────────────────────────────────
+void FSCore::checkPerm(uint32_t ino, uint16_t bit) {
+    if (!enforce_perms_) return;
+    Inode i; readInode(ino, i);
+    if (i.type == INODE_TYPE_SYMLINK) return; // symlink modes are not checked (as in POSIX)
+    if (!(i.mode & bit)) throw std::runtime_error("Permission denied");
+}
 
 void FSCore::unlinkIfUnreferenced(uint32_t ino) {
     Inode i; readInode(ino, i);
@@ -471,36 +497,32 @@ void FSCore::renameEntry(uint32_t sp, std::string_view sn,
 
     removeDirent(*this, sp, src);
 
-    // Free/drop whatever was at dst
+    // Free/drop whatever was at dst (remember its type before it is freed)
+    bool victim_was_dir = false;
     if (exists) {
         Inode vi; readInode(dst_ino, vi);
-        if (vi.type == INODE_TYPE_DIR) {
-            freeAllBlocks(dst_ino); freeInode(dst_ino);
-        } else {
-            dropLink(dst_ino);
-        }
+        victim_was_dir = (vi.type == INODE_TYPE_DIR);
+        if (victim_was_dir) { freeAllBlocks(dst_ino); freeInode(dst_ino); }
+        else                dropLink(dst_ino);
     }
 
-    // If moving a dir across parents, rewrite its ".." and fix link counts
-    if (si.type == INODE_TYPE_DIR && sp != dp) {
-        replaceDirent(*this, src_ino, "..", dp);
-        // sp loses one link (child no longer ".." to it)
-        Inode a; readInode(sp, a);
-        if (a.link_count > 0) a.link_count--;
-        touchMC(a); writeInode(sp, a);
-        // dp gains one link (new child ".." to it), unless it already did from an overwritten dir
-        Inode b; readInode(dp, b);
-        if (!exists || [&]{ Inode v; readInode(dst_ino, v); return v.type != INODE_TYPE_DIR; }())
-            b.link_count++;
-        // If we replaced a dir at dst, dp already lost one (the removed dir's ".." is gone)
-        // The replaceDirent above already handled that via freeAllBlocks — so no extra decrement needed
-        // The net for dp when replacing an empty dir: -1 (removed "..") +1 (new "..") = 0 net
-        if (exists) {
-            // We replaced dst dir: dp loses one ".." ref from victim, gains one from src — net 0
-            // But we already incremented above; undo it
-            if (b.link_count > 0) b.link_count--;
+    // Directory link counts: a parent's count includes one per child dir's "..".
+    //   replaced an empty dir at dst  -> dp loses that dir's ".."         (-1 dp)
+    //   moved a dir to another parent -> its ".." moves from sp to dp      (-1 sp, +1 dp)
+    if (si.type == INODE_TYPE_DIR) {
+        int dp_delta = victim_was_dir ? -1 : 0;
+        if (sp != dp) {
+            replaceDirent(*this, src_ino, "..", dp);
+            Inode a; readInode(sp, a);
+            if (a.link_count > 0) a.link_count--;
+            touchMC(a); writeInode(sp, a);
+            dp_delta += 1;
         }
-        touchMC(b); writeInode(dp, b);
+        if (dp_delta != 0) {
+            Inode b; readInode(dp, b);
+            b.link_count = static_cast<uint32_t>(static_cast<int64_t>(b.link_count) + dp_delta);
+            touchMC(b); writeInode(dp, b);
+        }
     }
 
     // Update ctime of moved inode
@@ -592,6 +614,7 @@ uint32_t FSCore::resolve(std::string_view path, uint32_t cwd,
 
         if (comp == "..") {
             // Follow ".." dirent (or stay at root)
+            checkPerm(cur, 0100);
             auto p = lookupDirent(*this, cur, "..");
             if (p) cur = *p;
             continue;
@@ -600,6 +623,7 @@ uint32_t FSCore::resolve(std::string_view path, uint32_t cwd,
         Inode ci; readInode(cur, ci);
         if (ci.type != INODE_TYPE_DIR)
             throw std::runtime_error("resolve: not a directory: " + comp);
+        checkPerm(cur, 0100); // searching a directory needs 'x'
 
         auto next_opt = lookupDirent(*this, cur, comp);
         if (!next_opt)

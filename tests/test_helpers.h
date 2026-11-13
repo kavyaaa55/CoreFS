@@ -73,7 +73,7 @@ static inline void make_test_image(const std::string& path,
     disk.readBlock(3, buf);
     Inode root{};
     root.type = INODE_TYPE_DIR; root.mode = 0755; root.link_count = 3;
-    root.block_count = 1; root.direct[0] = root_data;
+    root.block_count = 1; root.direct[0] = root_data; root.size = BLOCK_SIZE;
     root.atime = root.mtime = root.ctime = t;
     std::memcpy(buf, &root, sizeof(Inode));
     disk.writeBlock(3, buf);
@@ -82,7 +82,7 @@ static inline void make_test_image(const std::string& path,
     disk.readBlock(3, buf);
     Inode lf{};
     lf.type = INODE_TYPE_DIR; lf.mode = 0700; lf.link_count = 2;
-    lf.block_count = 1; lf.direct[0] = lf_data;
+    lf.block_count = 1; lf.direct[0] = lf_data; lf.size = BLOCK_SIZE;
     lf.atime = lf.mtime = lf.ctime = t;
     std::memcpy(buf + INODE_SIZE, &lf, sizeof(Inode));
     disk.writeBlock(3, buf);

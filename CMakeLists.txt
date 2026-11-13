@@ -60,12 +60,19 @@ add_executable(sfs_tests
     tests/test_dirent.cpp
     tests/test_path.cpp
     tests/test_commands.cpp
+    tests/test_dirgrow.cpp
+    tests/test_shell.cpp
+    src/shell.cpp
+    tools/fsck.cpp
 )
 target_link_libraries(sfs_tests PRIVATE sfs_core doctest::doctest)
 target_include_directories(sfs_tests PRIVATE include)
+# fsck.cpp is compiled in so tests can call fsck_image() on their images
+target_compile_definitions(sfs_tests PRIVATE SFS_FSCK_NO_MAIN)
 
 # ── Model-based fuzzer ────────────────────────────────────────────────────
-add_executable(sfs_fuzz tests/fuzz.cpp)
+add_executable(sfs_fuzz tests/fuzz.cpp tools/fsck.cpp)
+target_compile_definitions(sfs_fuzz PRIVATE SFS_FSCK_NO_MAIN)
 target_link_libraries(sfs_fuzz PRIVATE sfs_core)
 target_include_directories(sfs_fuzz PRIVATE include)
 

@@ -84,10 +84,11 @@ TEST_CASE("write/read across block boundary") {
     fs.readFile(ino, BLOCK_SIZE - 4, r, 8);
     for (int k = 0; k < 8; ++k) CHECK(r[k] == w[k]);
 
-    // Neighboring bytes must be zero
+    // Byte before the write is a zero-filled hole; byte after is past EOF
+    // (size = BLOCK_SIZE + 4), so readFile must return nothing there.
     uint8_t before = 0xFF, after = 0xFF;
-    fs.readFile(ino, BLOCK_SIZE - 5, &before, 1); CHECK(before == 0);
-    fs.readFile(ino, BLOCK_SIZE + 4, &after,  1); CHECK(after  == 0);
+    CHECK(fs.readFile(ino, BLOCK_SIZE - 5, &before, 1) == 1); CHECK(before == 0);
+    CHECK(fs.readFile(ino, BLOCK_SIZE + 4, &after,  1) == 0); CHECK(after  == 0xFF);
 
     fs.freeAllBlocks(ino); fs.freeInode(ino);
 }
