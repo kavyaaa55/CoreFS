@@ -63,76 +63,126 @@ Symlink targets are stored as file data in a `INODE_TYPE_SYMLINK` inode.
 
 | Tool | Minimum version | Notes |
 |---|---|---|
-| C++ compiler | C++20 | g++ 10+, clang++ 14+, MSVC 19.29+ |
-| CMake | 3.16 | For the full build (tests, fsck, etc.) |
-| MSYS2 (Windows) | any | Provides g++ via the `ucrt64` environment |
+| C++ compiler | C++20 | g++ 10+, clang++ 14+, MSVC 19.29+. An old MinGW (e.g. g++ 6.x in `C:\MinGW`) is **too old** |
+| CMake | 3.16 | For the full build (shell, mkfs, fsck, tests, fuzzer). CMake 4.x works with the flag below |
+| Ninja | any | Optional; the build generator used below (`make` works too) |
+| Git | any | To clone; CMake also uses it to fetch the doctest test framework |
+| MSYS2 (Windows) | any | Provides g++/CMake/Ninja via the `ucrt64` environment — https://www.msys2.org |
 
 ---
 
 ## Build
 
-### Windows — MSYS2 UCRT64 (recommended)
+All builds put the binaries in `build/`: `mkfs`, `simplefs_shell`, `simplefs_fsck`,
+`sfs_tests`, `sfs_fuzz` (with `.exe` on Windows).
 
-Open the **MSYS2 UCRT64** terminal (search Start menu), then:
+### 1. Get the code
 
 ```bash
-# One-time toolchain setup
-pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
-
-cd /d/coding/OS_CP/simplefs
-mkdir -p build && cd build
-cmake ..
-cmake --build .
+git clone https://github.com/kavyaaa55/CoreFS.git
+cd CoreFS
 ```
 
-Binaries land in `build/`.
+### 2a. Windows — PowerShell + MSYS2 (recommended)
 
-> **CMake 4.x:** the fetched doctest declares an old `cmake_minimum_required`, which CMake 4 rejects.
-> Configure with `cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5` (in PowerShell, quote it:
-> `"-DCMAKE_POLICY_VERSION_MINIMUM=3.5"`).
+One-time toolchain install (MSYS2 must already be installed in `C:\msys64`):
 
-### Manual g++ (no CMake needed)
+```powershell
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja"
+```
+
+Build (run from the `CoreFS` folder):
+
+```powershell
+# Put the MSYS2 tools first on PATH for this window (do this in every new window)
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+
+cmake -S . -B build -G Ninja "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+cmake --build build
+```
+
+> **Why the extra flag:** CMake 4.x rejects the old `cmake_minimum_required` in the
+> fetched doctest. `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` lets it configure (harmless on CMake 3.x).
+> In PowerShell it **must be in quotes**, or PowerShell splits it at the dot.
+>
+> **Rebuild after editing code:** just `cmake --build build`. If linking fails with
+> *Permission denied*, a `simplefs_shell.exe` is still running — `exit` it first.
+
+### 2b. Windows — MSYS2 UCRT64 terminal
+
+Open **MSYS2 UCRT64** from the Start menu, then:
 
 ```bash
-cd simplefs
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
 
+cd "/c/path/to/CoreFS"          # e.g. /c/Users/<you>/Desktop/CoreFS
+cmake -S . -B build -G Ninja -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build build
+```
+
+### 2c. Linux / macOS
+
+```bash
+cmake -S . -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build build
+```
+
+### Without CMake (shell, mkfs and fsck only)
+
+```bash
+mkdir -p build
 g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
-    src/mkfs_main.cpp src/disk.cpp src/fs_core.cpp src/directory.cpp \
-    -o build/mkfs.exe
-
+    src/mkfs_main.cpp src/disk.cpp -o build/mkfs.exe
 g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
     src/shell_main.cpp src/shell.cpp src/disk.cpp src/fs_core.cpp src/directory.cpp \
     -o build/simplefs_shell.exe
+g++ -std=c++20 -Wall -Wextra -Werror -Iinclude \
+    tools/fsck.cpp src/disk.cpp -o build/simplefs_fsck.exe
 ```
 
-### Linux / macOS
-
-```bash
-mkdir build && cd build
-cmake ..
-make
-```
+On Windows, `.\build.ps1` does the first two of these (expects g++ at `C:\msys64\ucrt64\bin`).
+The tests and fuzzer need the CMake build (it fetches doctest).
 
 ---
 
 ## Quick Start
 
-> **Important:** You must run binaries from the **same terminal you compiled them in** on Windows (Device Guard policy). Use MSYS2 UCRT64 terminal.
+```powershell
+# PowerShell (bash: same commands with ./ instead of .\)
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"   # if not already set in this window
+cd build
 
-```bash
-cd /d/coding/OS_CP/simplefs/build
+# 1. Create a fresh 64 MiB disk image (overwrites an existing disk.img)
+.\mkfs.exe disk.img
+#    optional size: .\mkfs.exe disk.img <total_blocks> <total_inodes>   (defaults 16384, 1024)
 
-# 1. Create a fresh 64 MiB disk image
-./mkfs.exe disk.img
+# 2. Open the shell on it — type `help` for commands, `exit` to quit
+.\simplefs_shell.exe disk.img
 
-# 2. Open the shell
-./simplefs_shell.exe disk.img
+# 3. After exiting, check the image is consistent (no output + exit code 0 = clean)
+.\simplefs_fsck.exe disk.img
+
+# 4. Run the tests
+.\sfs_tests.exe            # unit + shell tests
+.\sfs_fuzz.exe 100 400     # model-based fuzzer
+ctest                      # both
 ```
 
 You'll get an interactive prompt:
 ```
-/ >
+/ > mkdir -p docs/notes
+/ > echo "hello  CoreFS" > docs/notes/a.txt
+/ > cd docs/notes
+/docs/notes > cat a.txt
+hello  CoreFS
+/docs/notes > exit
 ```
+
+Everything is written to `disk.img` as you go, so reopening it with the shell shows the same files.
+You can also pipe commands in: `"mkdir x", "ls -l" | .\simplefs_shell.exe disk.img`.
+
+> If Windows refuses to run a freshly built `.exe` (Device Guard / Smart App Control), run it
+> from the same terminal session you built it in.
 
 ---
 
